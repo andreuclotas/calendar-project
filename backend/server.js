@@ -247,7 +247,7 @@ app.get("/api/f1/results/:season/:round/view", async (req, res) => {
   }
 });
 
-app.get("/api/standings/drivers/:season", async (req, res) => {
+app.get("/api/f1/standings/drivers/:season", async (req, res) => {
   const { season } = req.params;
   
   try {
@@ -292,7 +292,7 @@ app.get("/api/standings/drivers/:season", async (req, res) => {
       
     // --- CASE B: CACHE MISS (Fetch from API) ---
     console.log("Fetching F1 Standings from API...");
-    const response = await axios.get(`http://api.jolpi.ca/eargast/f1/${season}/driverstandings.json`);
+    const response = await axios.get(`http://api.jolpi.ca/ergast/f1/${season}/driverstandings.json`);
     
     // Safety check for empty API response
     if (!response.data.MRData.StandingsTable.StandingsLists.length) {
@@ -338,36 +338,8 @@ app.get("/api/standings/drivers/:season", async (req, res) => {
   }
 });
 
-app.get("/api/f1/results/:season/:round/view", async (req, res) => {
-  const { season, round } = req.params;
-  try {
-    const query = `
-      SELECT 
-        r.finish_position as position,
-        r.finish_position_text as position_text,
-        r.points, 
-        r.time_text, 
-        r.race_status as status, 
-        d.name as driver_name, 
-        d.surname as driver_surname, 
-        d.number as driver_number, 
-        t.name as team_name
-      FROM results_motorsport r
-      JOIN drivers d ON r.driver_id = d.id
-      JOIN teams_motorsports t ON r.team_id = t.id
-      JOIN events e ON r.event_id = e.id
-      WHERE e.season = ? AND e.round = ? AND e.sport_category = 'F1' AND e.sub_event_type = 'Race'
-      ORDER BY r.finish_position ASC
-    `;
-    const [rows] = await pool.query(query, [season, round]);
-    res.json(rows);
-  } catch (error) {
-    console.error("Fetching F1 results error:", error);
-    res.status(500).json({ error: "Failed to fetch F1 results" });
-  }
-});
 
-app.get("/api/standings/teams/:season", async (req, res) => {
+app.get("/api/f1/standings/teams/:season", async (req, res) => {
   const { season } = req.params;
   
   try {
@@ -409,7 +381,7 @@ app.get("/api/standings/teams/:season", async (req, res) => {
       
     // --- CASE B: CACHE MISS (Fetch from API) ---
     console.log("Fetching F1 Standings from API...");
-    const response = await axios.get(`http://api.jolpi.ca/eargast/f1/${season}/constructorstandings.json`);
+    const response = await axios.get(`http://api.jolpi.ca/ergast/f1/${season}/constructorstandings.json`);
     
     // Safety check for empty API response
     if (!response.data.MRData.StandingsTable.StandingsLists.length) {
