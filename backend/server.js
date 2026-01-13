@@ -249,17 +249,209 @@ app.get("/api/f1/results/:season/:round/view", async (req, res) => {
 
 app.get("/api/standings/drivers/:season", async (req, res) => {
   const { season } = req.params;
+  
   try {
+    // 1. Check what we have in the DB
+    const [saved] = await pool.query(`
+      SELECT round FROM driver_standings 
+      WHERE season = ? LIMIT 1
+    `, [season]);
+
+    // 2. Check what the latest completed race is
+    const [last] = await pool.query(`
+      SELECT MAX(round) as round
+      FROM events 
+      WHERE sport_category = 'F1' 
+      AND season = ? 
+      AND sub_event_type = 'Race' 
+      AND date <= NOW()
+    `, [season]);
+
+    const latestRound = last[0]?.round || 0; // Handle case where season hasn't started (null)
+    const savedRound = saved[0]?.round || -1; // Handle case where DB is empty
+
+    // --- CASE A: CACHE HIT ---
+    // If we have data AND it matches the latest round, return DB data
+    if (saved.length > 0 && savedRound == latestRound) {
+      console.log("Serving F1 Standings from DB");
+      
+      const [rows] = await pool.query(`
+        SELECT ds.position, ds.points, ds.wins, 
+               d.name_ref as driver_id,
+               d.forename, d.surname, 
+               tm.name as team_name, tm.external_id as team_id
+        FROM driver_standings ds
+        JOIN drivers d ON ds.driver_id = d.id
+        JOIN constructors tm ON ds.team_id = tm.id
+        WHERE ds.season = ?
+        ORDER BY ds.position ASC
+      `, [season]);
+      
+      return res.json(rows);
+    }
+      
+    // --- CASE B: CACHE MISS (Fetch from API) ---
+    console.log("Fetching F1 Standings from API...");
     const response = await axios.get(`http://api.jolpi.ca/eargast/f1/${season}/driverstandings.json`);
+    
+    // Safety check for empty API response
     if (!response.data.MRData.StandingsTable.StandingsLists.length) {
       return res.status(404).json({ message: "Driver standings not found" });
     }
-    const driverStandings = response.data.MRData.StandingsTable.StandingsLists[0].DriverStandings;
+
+    const listData = response.data.MRData.StandingsTable.StandingsLists[0];
+    const currentRound = listData.round;
+    const driverStandings = listData.DriverStandings;
+
     res.json(driverStandings);
+
+    for (const d of driverStandings) {
+      const position = d.position;
+      const points = d.points;
+      const wins = d.wins;
+      const driverRef = d.Driver.driverId;
+      const teamRef = d.Constructors[0].constructorId;
+
+      await pool.query(`
+        INSERT INTO driver_standings 
+        (driver_id, season, position, points, wins, round, team_id)
+        VALUES (
+            (SELECT id FROM drivers WHERE external_id = ? LIMIT 1), 
+            ?, ?, ?, ?, ?, 
+            (SELECT id FROM teams_motorsports WHERE external_id = ? LIMIT 1)
+        )
+        ON DUPLICATE KEY UPDATE 
+            position = VALUES(position), 
+            points = VALUES(points), 
+            wins = VALUES(wins), 
+            round = VALUES(round),
+            team_id = VALUES(team_id)
+        `, [driverRef, season, position, points, wins, currentRound, teamRef]
+      );
+    }
 
   } catch (error) {
     console.error("Fetching F1 driver standings error:", error);
-    res.status(500).json({ error: "Failed to fetch F1 driver standings" });
+    if (!res.headersSent) {
+        res.status(500).json({ error: "Failed to fetch F1 driver standings" });
+    }
+  }
+});
+
+app.get("/api/f1/results/:season/:round/view", async (req, res) => {
+  const { season, round } = req.params;
+  try {
+    const query = `
+      SELECT 
+        r.finish_position as position,
+        r.finish_position_text as position_text,
+        r.points, 
+        r.time_text, 
+        r.race_status as status, 
+        d.name as driver_name, 
+        d.surname as driver_surname, 
+        d.number as driver_number, 
+        t.name as team_name
+      FROM results_motorsport r
+      JOIN drivers d ON r.driver_id = d.id
+      JOIN teams_motorsports t ON r.team_id = t.id
+      JOIN events e ON r.event_id = e.id
+      WHERE e.season = ? AND e.round = ? AND e.sport_category = 'F1' AND e.sub_event_type = 'Race'
+      ORDER BY r.finish_position ASC
+    `;
+    const [rows] = await pool.query(query, [season, round]);
+    res.json(rows);
+  } catch (error) {
+    console.error("Fetching F1 results error:", error);
+    res.status(500).json({ error: "Failed to fetch F1 results" });
+  }
+});
+
+app.get("/api/standings/teams/:season", async (req, res) => {
+  const { season } = req.params;
+  
+  try {
+    // 1. Check what we have in the DB
+    const [saved] = await pool.query(`
+      SELECT round FROM teams_standings 
+      WHERE season = ? LIMIT 1
+    `, [season]);
+
+    // 2. Check what the latest completed race is
+    const [last] = await pool.query(`
+      SELECT MAX(round) as round
+      FROM events 
+      WHERE sport_category = 'F1' 
+      AND season = ? 
+      AND sub_event_type = 'Race' 
+      AND date <= NOW()
+    `, [season]);
+
+    const latestRound = last[0]?.round || 0; // Handle case where season hasn't started (null)
+    const savedRound = saved[0]?.round || -1; // Handle case where DB is empty
+
+    // --- CASE A: CACHE HIT ---
+    // If we have data AND it matches the latest round, return DB data
+    if (saved.length > 0 && savedRound == latestRound) {
+      console.log("Serving F1 Standings from DB");
+      
+      const [rows] = await pool.query(`
+        SELECT ts.position, ts.points, ts.wins,
+               tm.name as team_name, tm.external_id as team_id
+        FROM teams_standings ts
+        JOIN teams_motorsports tm ON ts.team_id = tm.id
+        WHERE ts.season = ?
+        ORDER BY ts.position ASC
+      `, [season]);
+      
+      return res.json(rows);
+    }
+      
+    // --- CASE B: CACHE MISS (Fetch from API) ---
+    console.log("Fetching F1 Standings from API...");
+    const response = await axios.get(`http://api.jolpi.ca/eargast/f1/${season}/constructorstandings.json`);
+    
+    // Safety check for empty API response
+    if (!response.data.MRData.StandingsTable.StandingsLists.length) {
+      return res.status(404).json({ message: "Team standings not found" });
+    }
+
+    const listData = response.data.MRData.StandingsTable.StandingsLists[0];
+    const currentRound = listData.round;
+    const teamsStandings = listData.ConstructorStandings;
+
+    res.json(teamsStandings);
+
+    for (const t of teamsStandings) {
+      const position = t.position;
+
+      const points = t.points;
+      const wins = t.wins;
+
+      const teamRef = t.Constructor.constructorId;
+
+      await pool.query(`
+        INSERT INTO teams_standings 
+        (team_id, season, position, points, wins, round)
+        VALUES (
+            (SELECT id FROM teams_motorsports WHERE external_id = ? LIMIT 1),
+            ?, ?, ?, ?, ?
+        )
+        ON DUPLICATE KEY UPDATE 
+            position = VALUES(position), 
+            points = VALUES(points), 
+            wins = VALUES(wins),
+            round = VALUES(round),
+            team_id = VALUES(team_id)
+        `, [teamRef, season, position, points, wins, currentRound]
+      );
+    }
+
+  } catch (error) {
+    console.error("Fetching F1 team standings error:", error);
+    if (!res.headersSent) {
+        res.status(500).json({ error: "Failed to fetch F1 team standings" });
+    }
   }
 });
 
